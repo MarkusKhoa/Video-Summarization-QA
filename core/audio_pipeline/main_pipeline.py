@@ -2,10 +2,11 @@ from concurrent.futures import ThreadPoolExecutor
 from loguru import logger
 from fastapi import FastAPI, UploadFile, HTTPException, Form
 from typing import List
-from pytube import YouTube
 from tenacity import retry, stop_after_attempt, wait_fixed
 from google.cloud import storage
+from .audio_processing import AudioDownloader  # Changed to relative import
 
+import re
 import os
 import io
 
@@ -19,6 +20,7 @@ class AudioPipeline:
         self.executor = ThreadPoolExecutor(max_workers=4)
         self.gcs_bucket_name = gcs_bucket_name
         self.gcs_client = storage.Client()
+        self.downloader = AudioDownloader(output_dir="temp_downloads")
 
     def upload_to_gcs(self, file_path, destination_blob_name):
         """Upload a file to Google Cloud Storage."""
@@ -46,22 +48,22 @@ class AudioPipeline:
             logger.info(f"Running inference on {len(chunks)} chunks")
             transcriptions = self.inference_client.process_batch(chunks)
             
-            # Step 4: Save processed audio locally (temporary)
-            temp_file_path = "temp_audio_file.wav"
+            # Step 4: Save processed audio to GCS
+            temp_file_path = f"temp_audio_{os.urandom(8).hex()}.wav"
             with open(temp_file_path, "wb") as f:
                 f.write(audio_file)
 
-            # Step 5: Upload to GCS
+            # Upload to GCS with unique identifier
             gcs_path = f"processed_audio/{os.path.basename(temp_file_path)}"
             self.upload_to_gcs(temp_file_path, gcs_path)
 
-            # Step 6: Clean up local file
+            # Clean up local file
             os.remove(temp_file_path)
 
-            # Step 7: Combine results
+            # Return combined results
             return self.combine_results(transcriptions)
         except Exception as e:
-            logger.error(f"Error processing file {audio_file}: {str(e)}")
+            logger.error(f"Error processing file: {str(e)}")
             raise
             
     def combine_results(self, transcriptions):
@@ -106,37 +108,65 @@ class AudioPipeline:
                 
         return results
 
+    def sanitize_filename(self, title):
+        """Sanitize the filename by removing invalid characters."""
+        # Remove invalid characters and replace spaces with underscores
+        sanitized = re.sub(r'[<>:"/\\|?*]', '', title)
+        sanitized = re.sub(r'\s+', '_', sanitized)
+        # Limit length and remove trailing spaces/underscores
+        sanitized = sanitized[:100].strip('_').strip()
+        return sanitized
+
     @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
     def process_youtube_link(self, youtube_url):
         """Download and process audio from a YouTube link with retries."""
+        audio_path = None
         try:
             logger.info(f"Downloading audio from YouTube link: {youtube_url}")
-            yt = YouTube(youtube_url)
-            audio_stream = yt.streams.filter(only_audio=True).first()
-            if not audio_stream:
-                raise ValueError("No audio stream found for the given YouTube link.")
             
-            # Download audio to memory
-            audio_data = io.BytesIO()
-            audio_stream.stream_to_buffer(audio_data)
-            audio_data.seek(0)  # Reset buffer pointer
+            # Clean up any existing downloads with same name pattern
+            for file in os.listdir(self.downloader.output_dir):
+                if file.endswith('.mp3'):
+                    try:
+                        os.remove(os.path.join(self.downloader.output_dir, file))
+                    except Exception:
+                        pass
             
-            # Save downloaded audio locally (temporary)
-            temp_file_path = "temp_youtube_audio.mp3"
-            with open(temp_file_path, "wb") as f:
-                f.write(audio_data.getvalue())
-
+            # Use AudioDownloader to get the file
+            audio_path, video_title = self.downloader.download_youtube_video(youtube_url)
+            
+            if not os.path.exists(audio_path):
+                raise Exception("Downloaded file not found")
+                
             # Upload to GCS
-            gcs_path = f"youtube_audio/{os.path.basename(temp_file_path)}"
-            self.upload_to_gcs(temp_file_path, gcs_path)
-
-            # Clean up local file
-            os.remove(temp_file_path)
-
+            gcs_path = f"audio-files-and-transcripts/{os.path.basename(audio_path)}"
+            self.upload_to_gcs(audio_path, gcs_path)
+            
+            # Process the audio file
+            with open(audio_path, 'rb') as f:
+                audio_data = f.read()
+            
             # Process the audio
-            return self.process_file(audio_data)
+            result = self.process_file(audio_data)
+            
+            # Clean up local file
+            if audio_path and os.path.exists(audio_path):
+                os.remove(audio_path)
+                
+            return result
+            
         except Exception as e:
             logger.error(f"Error processing YouTube link {youtube_url}: {str(e)}")
+            # Ensure cleanup on error
+            if audio_path and os.path.exists(audio_path):
+                try:
+                    os.remove(audio_path)
+                except Exception:
+                    pass
+            # Reset the downloader's progress bar
+            if hasattr(self.downloader, 'pbar') and self.downloader.pbar:
+                self.downloader.pbar.close()
+                self.downloader.pbar = None
             raise
 
 # Initialize the pipeline (replace with actual preprocessor and inference client)
