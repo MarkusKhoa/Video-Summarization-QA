@@ -10,7 +10,6 @@ import re
 import os
 import io
 
-
 app = FastAPI()
 
 class AudioPipeline:
@@ -33,7 +32,7 @@ class AudioPipeline:
             logger.error(f"Failed to upload {file_path} to GCS: {str(e)}")
             raise
 
-    def process_file(self, audio_file):
+    def transcribe_file(self, audio_file):
         """Process a single audio file."""
         try:
             # Step 1: Convert audio
@@ -54,7 +53,7 @@ class AudioPipeline:
                 f.write(audio_file)
 
             # Upload to GCS with unique identifier
-            gcs_path = f"processed_audio/{os.path.basename(temp_file_path)}"
+            gcs_path = f"audio-files-and-transcripts/{os.path.basename(temp_file_path)}"
             self.upload_to_gcs(temp_file_path, gcs_path)
 
             # Clean up local file
@@ -82,14 +81,14 @@ class AudioPipeline:
             
         return combined_text.strip()
     
-    def process_batch_files(self, audio_files):
+    def transcribe_batch_files(self, audio_files):
         """Process multiple audio files in parallel."""
         futures = []
         results = {}
         
         # Submit tasks
         for audio_file in audio_files:
-            future = self.executor.submit(self.process_file, audio_file)
+            future = self.executor.submit(self.transcribe_file, audio_file)
             futures.append((audio_file, future))
         
         # Collect results
@@ -117,20 +116,13 @@ class AudioPipeline:
         sanitized = sanitized[:100].strip('_').strip()
         return sanitized
 
-    @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
-    def process_youtube_link(self, youtube_url):
+    @retry(stop=stop_after_attempt(2), wait=wait_fixed(2))
+    def upload_audio_from_youtube(self, youtube_url):
         """Download and process audio from a YouTube link with retries."""
         audio_path = None
         try:
             logger.info(f"Downloading audio from YouTube link: {youtube_url}")
-            
-            # Clean up any existing downloads with same name pattern
-            for file in os.listdir(self.downloader.output_dir):
-                if file.endswith('.mp3'):
-                    try:
-                        os.remove(os.path.join(self.downloader.output_dir, file))
-                    except Exception:
-                        pass
+        
             
             # Use AudioDownloader to get the file
             audio_path, video_title = self.downloader.download_youtube_video(youtube_url)
@@ -139,21 +131,16 @@ class AudioPipeline:
                 raise Exception("Downloaded file not found")
                 
             # Upload to GCS
-            gcs_path = f"audio-files-and-transcripts/{os.path.basename(audio_path)}"
+            gcs_path = f"audio-files/{os.path.basename(audio_path)}"
             self.upload_to_gcs(audio_path, gcs_path)
-            
-            # Process the audio file
-            with open(audio_path, 'rb') as f:
-                audio_data = f.read()
-            
-            # Process the audio
-            result = self.process_file(audio_data)
-            
-            # Clean up local file
-            if audio_path and os.path.exists(audio_path):
-                os.remove(audio_path)
-                
-            return result
+
+            # Clean up any existing downloads with same name pattern
+            for file in os.listdir(self.downloader.output_dir):
+                if file.endswith('.mp3') or file.endswith('.mp4'):
+                    try:
+                        os.remove(os.path.join(self.downloader.output_dir, file))
+                    except Exception:
+                        pass
             
         except Exception as e:
             logger.error(f"Error processing YouTube link {youtube_url}: {str(e)}")
@@ -170,39 +157,39 @@ class AudioPipeline:
             raise
 
 # Initialize the pipeline (replace with actual preprocessor and inference client)
-pipeline = AudioPipeline(preprocessor=None, inference_client=None, gcs_bucket_name="your-gcs-bucket-name")
+pipeline = AudioPipeline(preprocessor=None, inference_client=None, gcs_bucket_name="audio-files-and-transcripts")
 
 @app.post("/process-file/")
-async def process_file_endpoint(file: UploadFile):
+async def transcribe_file_endpoint(file: UploadFile):
     """API endpoint to process a single audio file."""
     try:
         logger.info(f"Received file: {file.filename}")
         audio_data = await file.read()
-        result = pipeline.process_file(audio_data)
+        result = pipeline.transcribe_file(audio_data)
         return {"status": "success", "transcription": result}
     except Exception as e:
         logger.error(f"Error processing file: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
 
 @app.post("/process-batch/")
-async def process_batch_endpoint(files: List[UploadFile]):
-    """API endpoint to process multiple audio files."""
+async def transcribe_batch_endpoint(files: List[UploadFile]):
+    """API endpoint to transcribe multiple audio files."""
     try:
-        logger.info(f"Received {len(files)} files for batch processing")
+        logger.info(f"Received {len(files)} files for batch transcribeing")
         audio_files = {file.filename: await file.read() for file in files}
-        results = pipeline.process_batch_files(audio_files)
+        results = pipeline.transcribe_batch_files(audio_files)
         return results
     except Exception as e:
-        logger.error(f"Error processing batch: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error processing batch: {str(e)}")
+        logger.error(f"Error transcribeing batch: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error transcribeing batch: {str(e)}")
 
 @app.post("/process-youtube/")
 async def process_youtube_endpoint(youtube_url: str = Form(...)):
     """API endpoint to process audio from a YouTube link."""
     try:
         logger.info(f"Received YouTube link: {youtube_url}")
-        result = pipeline.process_youtube_link(youtube_url)
-        return {"status": "success", "transcription": result}
+        result = pipeline.upload_audio_from_youtube(youtube_url)
+        return {"status": "success"}
     except Exception as e:
         logger.error(f"Error processing YouTube link: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing YouTube link: {str(e)}")
