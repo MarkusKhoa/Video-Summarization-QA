@@ -64,9 +64,8 @@ def extract_audio(video_path, output_audio_path = "output_audio.mp3"):
         logger.error(f"Cannot extract audio from video path: {video_path}")
 
 if __name__ == "__main__":
-    yt_url = "https://www.youtube.com/watch?v=bsxio9zOJVg"
+    yt_url = "https://www.youtube.com/watch?v=3Jhtj0k7SOk"
     fb_url = "https://www.facebook.com/watch?v=1534519627339156"
 
     yt_video_path, title = download_youtube_video(url = yt_url, output_dir = "data")
-    # fb_video_path = download_facebook_video(url = fb_url, output_file_path = "data/output_fb_video.mp3")
     
