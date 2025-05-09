@@ -1,0 +1,7 @@
+/data/
+/temp_downloads/
+.env
+poetry.lock
+/__pycache__/
+youtube-summarization-qa-77de3bca24be.json
+github_PAT.txt
