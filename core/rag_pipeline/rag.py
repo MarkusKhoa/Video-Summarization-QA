@@ -21,7 +21,7 @@ from langchain_core.tools import tool
 
 from langchain_community.document_loaders import TextLoader
 from langchain_weaviate.vectorstores import WeaviateVectorStore
-from langchain_text_splitters import CharacterTextSplitter, RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from contextlib import contextmanager
 from loguru import logger
